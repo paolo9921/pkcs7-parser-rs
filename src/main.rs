@@ -14,6 +14,9 @@ use bcder::decode::{self, Constructed, DecodeError};
 use std::fs::File;
 use std::io::Read;
 
+use chrono::{NaiveDateTime, TimeZone, Utc};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 //use chrono::{NaiveDateTime, TimeZone, Utc};
 //use ring::signature::{self, UnparsedPublicKey};
 
@@ -47,8 +50,8 @@ pub struct AlgorithmIdentifier {
     pub parameters: Option<Vec<u8>>,
 }
 pub struct Validity {
-    pub not_before: String,
-    pub not_after: String,
+    pub not_before: u64,
+    pub not_after: u64,
 }
 pub struct SubjectPublicKeyInfo {
     pub algorithm: AlgorithmIdentifier,
@@ -364,26 +367,29 @@ impl Validity {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
         cons.take_sequence(|cons| {
 
-            let not_before = cons.take_primitive(|_,content| {
+            let not_before_str = cons.take_primitive(|_, content| {
                 let bytes = content.slice_all()?;
-                
                 let time_str = String::from_utf8(bytes.to_vec()).map_err(|_| {
                     DecodeError::content("Invalid UTF-8 sequence", decode::Pos::default())
                 })?;
-                _=content.skip_all();
+                _ = content.skip_all();
                 Ok(time_str)
             })?;
- 
-            println!("#########notbefore: {}",not_before);
-            let not_after = cons.take_primitive(|_,content| {
+
+            let not_after_str = cons.take_primitive(|_, content| {
                 let bytes = content.slice_all()?;
-                
                 let time_str = String::from_utf8(bytes.to_vec()).map_err(|_| {
                     DecodeError::content("Invalid UTF-8 sequence", decode::Pos::default())
                 })?;
-                _=content.skip_all();
+                _ = content.skip_all();
                 Ok(time_str)
             })?;
+
+            // converts string into UNIX epoch time
+            let not_before = Validity::parse_asn1_to_timestamp(&not_before_str)
+                .map_err(|_| DecodeError::content("Failed to parse not_before timestamp", decode::Pos::default()))?;
+            let not_after = Validity::parse_asn1_to_timestamp(&not_after_str)
+                .map_err(|_| DecodeError::content("Failed to parse not_after timestamp", decode::Pos::default()))?;
 
             Ok(Validity {
                 not_before,
@@ -391,6 +397,16 @@ impl Validity {
             })
         })
     }
+
+    fn parse_asn1_to_timestamp(date_str: &str) -> Result<u64, DecodeError<std::string::FromUtf8Error>> {
+        let naive_time = NaiveDateTime::parse_from_str(date_str, "%y%m%d%H%M%SZ")
+            .map_err(|_| DecodeError::content("Invalid date format", decode::Pos::default()))?;
+        
+        let timestamp = Utc.from_utc_datetime(&naive_time).timestamp() as u64;
+
+        Ok(timestamp)
+    }
+
     pub fn to_string(&self) -> String {
         format!(
             "Validity {{\n    not_before: {},\n    not_after: {}\n  }}",
@@ -399,6 +415,9 @@ impl Validity {
         )
     }
 }
+
+
+
 
 impl SubjectPublicKeyInfo {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
@@ -486,8 +505,6 @@ fn load_pkcs7(path: &str) -> Result<Pkcs7, Box<dyn std::error::Error>> {
 
     Ok(pkcs7)
 }
-
-use std::time::{SystemTime, UNIX_EPOCH};
 
 
 fn main() {
