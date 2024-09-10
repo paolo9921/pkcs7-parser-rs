@@ -7,7 +7,7 @@ Verification of trust (certificate path)
 */
 
 
-use bcder::OctetString;
+use bcder::{decode::Source, OctetString};
 #[allow(dead_code)]
 use bcder::{Oid, Tag, Mode};
 use bcder::decode::{self, Constructed, DecodeError};
@@ -22,13 +22,59 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Pkcs7 {
     pub content_type: Oid,
-    pub content: Vec<Certificate>,
-    //pub signatures: Vec<Signature>,
+    pub content: SignedData,
 }
 
-pub struct Signature {
-    pub algorithm: AlgorithmIdentifier,
-    pub signature: Vec<u8>,
+pub struct SignedData {
+    pub version: u8,
+    pub digest_algorithms: Vec<AlgorithmIdentifier>,
+    pub content_info: ContentInfo,
+    pub certs: Vec<Certificate>,
+    pub crls: Vec<u8>,
+    pub signer_infos: Vec<SignerInfo>, // Multiple SignerInfo structures
+}
+
+pub struct SignerInfo {
+    pub version: u8,
+    pub issuer_and_serial_number: IssuerAndSerialNumber,
+    pub digest_algorithm: AlgorithmIdentifier,
+    pub authenticated_attributes: Option<AuthenticatedAttributes>, // Optional field
+    pub digest_encryption_algorithm: AlgorithmIdentifier,
+    pub encrypted_digest: Vec<u8>, // The actual signature (Encrypted digest)
+    pub unauthenticated_attributes: Option<AuthenticatedAttributes>, // Optional field
+}
+
+pub struct IssuerAndSerialNumber {
+    pub issuer: Name,  
+    pub serial_number: String,
+}
+#[derive(Debug)]
+pub struct Name {
+    pub rdn_sequence: Vec<RelativeDistinguishedName>,
+}
+
+#[derive(Debug)]
+pub struct RelativeDistinguishedName {
+    pub attributes: Vec<AttributeTypeAndValue>,
+}
+#[derive(Debug)]
+pub struct AttributeTypeAndValue {
+    pub attribute_type: Oid,
+    pub attribute_value: String,
+}
+
+pub struct AuthenticatedAttributes {
+    pub auth_attr: Vec<u8>, 
+}
+
+pub struct Attribute {
+    pub oid: Oid,           // Object Identifier of the attribute
+    pub value: Vec<u8>,     // Byte array representing the attribute value
+}
+
+pub struct ContentInfo {
+    pub content_type: Oid,
+    pub content: Option<Vec<u8>>, // Encapsulated content
 }
 
 pub struct Certificate {
@@ -36,6 +82,7 @@ pub struct Certificate {
     pub signature_algorithm: AlgorithmIdentifier,
     pub signature_value: Vec<u8>,
 }
+
 pub struct TbsCertificate {
     pub version: Option<u8>,
     pub serial_number: String,
@@ -45,92 +92,29 @@ pub struct TbsCertificate {
     pub subject: Vec<u8>,
     pub subject_public_key_info: SubjectPublicKeyInfo,
 }
+
 pub struct AlgorithmIdentifier {
     pub algorithm: Oid,
-    pub parameters: Option<Vec<u8>>,
+    pub parameters: Option<Vec<u8>>, // Optional parameters
 }
+
 pub struct Validity {
     pub not_before: u64,
     pub not_after: u64,
 }
+
 pub struct SubjectPublicKeyInfo {
     pub algorithm: AlgorithmIdentifier,
     pub subject_public_key: Vec<u8>,
 }
-/* 
-#[derive(Debug)]
-enum VerifyError {
-    UnsupportedAlgorithm,
-    InvalidSignature,
-    CertificateExpired,
-    UntrustedCertificate,
-}
-impl std::fmt::Display for VerifyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-impl std::error::Error for VerifyError {}
-
-*/
 
 impl Pkcs7 {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
         cons.take_sequence(|cons| {
             let content_type = Oid::take_from(cons)?;
-            //println!("Parsed content_type: {:?}", content_type);
-
             let content = cons.take_constructed_if(Tag::CTX_0, |cons| {
-                cons.take_sequence(|cons| {
-                    
-                    // parse SignedData
-                    let cms_version = cons.capture_one().expect("cms version");
-                    let digest_algo_id = cons.capture_one().expect("digest_algo_id");
-                    //println!("digest_algo_id {:?}",digest_algo_id);
-                    //let encap_content_info = cons.capture_one().expect("encap_content_info");
-                    //println!("encap_content {:?}",encap_content_info);
-                    
-                    // we need the e_content_octet to calculate the digest of the message
-                    /*let e_content_octet = cons.take_sequence(|cons|{
-                        let content_type = Oid::take_from(cons)?;
-                        println!("content_type {:?}",content_type);
-                        let e_content_octet = OctetString::take_opt_from(cons);
-                    
-                        Ok(e_content_octet)
-                    });
-                    
-                    println!("e_content_octet: {:?}",e_content_octet);*/
-
-                    let encap_content_info = cons.take_sequence(|eContCons|{
-                        let e_content_type = Oid::take_from(eContCons)?;
-                        println!("econtenttype {}",e_content_type);
-                        Ok(e_content_type)
-                    });
-                    println!("Parsed content_info_type: {:?}", encap_content_info);
-                    
-                    
-                    
-                    // Parse CertificateSet
-                    let cert_set = cons.take_constructed_if(Tag::CTX_0, |cons| {
-
-                        let a = cons.skip_one();
-                        //println!("a {:?}",a);
-                        let mut certificates = Vec::new();                        
-
-                        // Read the CertificateChoices
-                        while let Ok(cert) = Certificate::take_from(cons) {
-                            //println!("Parsed certificate: {:?}", cert.to_string());
-                            certificates.push(cert);
-                        }
-
-                        Ok(certificates)
-                    })?;
-                    println!("Parsed all certificates");
-                    let signer_infos = cons.capture_all();
-                    Ok(cert_set)
-                })
+                SignedData::take_from(cons)
             })?;
-
             Ok(Pkcs7 {
                 content_type,
                 content,
@@ -139,38 +123,307 @@ impl Pkcs7 {
     }
 
     pub fn to_string(&self) -> String {
-        let mut content_string = String::new();
-        for x in &self.content {
-            content_string.push_str(&format!("{}\n", x.to_string()));
-        }
-
         format!(
-            "Pkcs7 {{\n  content_type: {},\n  content: \n{}\n}}",
+            "Pkcs7 {{\n  content_type: {},\n  content: {}\n}}",
             self.content_type.to_string(),
-            content_string,
+            self.content.to_string(),
         )
     }
 }
 
-/*impl Signature {
+impl SignedData {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
         cons.take_sequence(|cons| {
-            let algorithm = AlgorithmIdentifier::take_from(cons)?;
-            let signature = cons.take_value(|_, content| {
-                let sign = content.as_primitive().map_err(|e| {
-                    DecodeError::content(format!("Expected primitive content: {}", e), decode::Pos::default())
-                })?;
-                let sign_bytes = sign.slice_all()?.to_vec();
-                Ok(sign_bytes)
+            let version = cons.take_primitive_if(Tag::INTEGER, |content| content.to_u8())?;
+            let digest_algorithms = cons.take_set(|cons| {
+                let mut algorithms = Vec::new();
+                while let Ok(algorithm) = AlgorithmIdentifier::take_from(cons) {
+                    algorithms.push(algorithm);
+                }
+                Ok(algorithms)
             })?;
-            _=cons.skip_all();
-            Ok(Signature {
-                algorithm,
-                signature,
+            let content_info = ContentInfo::take_from(cons)?;
+            
+            let certs = cons.take_constructed_if(Tag::CTX_0, |cons| {
+                let mut certificates = Vec::new();
+                while let Ok(cert) = Certificate::take_from(cons) {
+                    certificates.push(cert);
+                }
+                Ok(certificates)
+            })?;
+
+            let signer_infos = cons.take_set(|cons| {
+                let mut signers = Vec::new();
+                while let Ok(signer) = SignerInfo::take_from(cons) {
+                    signers.push(signer);
+                }
+                Ok(signers)
+            })?;
+
+            Ok(SignedData {
+                version,
+                digest_algorithms,
+                content_info,
+                certs,
+                crls: Vec::new(), // Optional, can be parsed later
+                signer_infos,
             })
         })
     }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "SignedData {{\n  version: {},\n  content_info: {},\n  signer_infos: {}\n}}",
+            self.version,
+            self.content_info.to_string(),
+            self.signer_infos.iter().map(|s| s.to_string()).collect::<String>(),
+        )
+    }
+}
+
+impl SignerInfo {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        cons.take_sequence(|cons| {
+            let version = cons.take_primitive_if(Tag::INTEGER, |content| content.to_u8())?;
+            let issuer_and_serial_number = IssuerAndSerialNumber::take_from(cons)?;
+            let digest_algorithm = AlgorithmIdentifier::take_from(cons)?;
+            let authenticated_attributes = cons.take_opt_constructed_if(Tag::CTX_0, |cons| {
+                AuthenticatedAttributes::take_from(cons)
+            })?;
+            let digest_encryption_algorithm = AlgorithmIdentifier::take_from(cons)?;
+
+            let encrypted_digest = cons.take_value(|_,content| {
+                /*let bytes = content.as_primitive()?.slice_all()?.to_vec();
+                println!("[SignerInfo] Parsed encrypted digest (bytes): {:?}", bytes);
+                Ok(bytes)*/
+                let sign = content.as_primitive().map_err(|e|{
+                    DecodeError::content(format!("Expected constructed content: {}", e), decode::Pos::default())
+                })?;
+                
+                let sign_bytes = sign.slice_all()?.to_vec();
+                //sign_bytes.drain(0..1);
+                //let hex_bytes = hex::encode(&sign_bytes);
+                _=sign.skip_all();
+                println!("[SignerInfo] Parsed encrypted digest (bytes): {:?}", sign_bytes);
+                Ok(sign_bytes)
+            })?;
+
+            println!("[SignerInfo] Successfully parsed encrypted digest.");
+            let unauthenticated_attributes = cons.take_opt_constructed_if(Tag::CTX_1, |cons| {
+                AuthenticatedAttributes::take_from(cons)
+            })?;
+
+            cons.skip_all().unwrap_or(());
+            //let unauthenticated_attributes = None;
+            Ok(SignerInfo {
+                version,
+                issuer_and_serial_number,
+                digest_algorithm,
+                authenticated_attributes,
+                digest_encryption_algorithm,
+                encrypted_digest,
+                unauthenticated_attributes,
+            })
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "SignerInfo {{\n  version: {},\n  digest_algorithm: {},\n  encrypted_digest: {:?}\n}}",
+            self.version,
+            self.digest_algorithm.to_string(),
+            self.encrypted_digest,
+        )
+    }
+}
+
+impl IssuerAndSerialNumber {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        cons.take_sequence(|cons| {
+            let issuer = Name::take_from(cons)?;
+
+            let serial_number = cons.take_primitive(|_,content| {
+                let bytes = content.slice_all()?.to_vec();     
+                let hex_bytes = hex::encode(&bytes); 
+                _ = content.skip_all();
+                //println!("[tbs] Serial Number Bytes: {:?}", serial_number);
+                Ok(hex_bytes)
+            })?;
+
+            Ok(IssuerAndSerialNumber {
+                issuer,
+                serial_number,
+            })
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "IssuerAndSerialNumber {{\n  issuer: {:?},\n  serial_number: {:?}\n}}",
+            self.issuer,
+            self.serial_number,
+        )
+    }
+}
+
+// Modifica dell'implementazione per saltare il parsing
+impl Name {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        cons.take_sequence(|cons| {
+            println!("[NA] Start parsing Name sequence...\n");
+            // Skippare tutte le voci di RelativeDistinguishedName
+            while cons.skip_one()?.is_some() {
+            }
+            println!("[NA] Finished parsing Name sequence.\n");
+            Ok(Name { rdn_sequence: Vec::new() }) // Ritorna un Name con lista vuota
+        })
+    }
+}
+
+
+// Parsing della struttura RelativeDistinguishedName
+impl RelativeDistinguishedName {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        let mut attributes = Vec::new();
+        cons.take_set(|cons| {
+            println!("[RN] Start parsing RelativeDistinguishedName set...\n");
+
+            // Continua a leggere finché ci sono attributi
+            while let Ok(attr) = AttributeTypeAndValue::take_from(cons) {
+                println!("[RN] Parsed AttributeTypeAndValue: {:?}\n", attr);
+                attributes.push(attr);
+            }
+
+            println!("[RN] Finished parsing RelativeDistinguishedName set.\n");
+
+            Ok(RelativeDistinguishedName { attributes })
+        })
+    }
+}
+
+/* Parsing della struttura Name
+impl Name {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        let mut rdn_sequence = Vec::new();
+        cons.take_sequence(|cons| {
+            println!("[NA] Start parsing Name sequence...\n");
+
+            // Continua a leggere finché ci sono RDN
+            while let Ok(rdn) = RelativeDistinguishedName::take_from(cons) {
+                println!("[NA] Parsed RelativeDistinguishedName: {:?}\n", rdn);
+                rdn_sequence.push(rdn);
+            }
+
+            println!("[NA] Finished parsing Name sequence.\n");
+
+            // Cattura il contenuto rimanente
+            let remaining = cons.capture_all()?;
+            if !remaining.is_empty() {
+                println!("[NA] Remaining unprocessed content: {:?}", remaining);
+            }
+
+            Ok(Name { rdn_sequence })
+        })
+    }
 }*/
+
+
+// Parsing della struttura AttributeTypeAndValue
+impl AttributeTypeAndValue {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        cons.take_sequence(|cons| {
+            let attribute_type = Oid::take_from(cons)?;
+            println!("[AV] Parsed attribute type: {:?}\n", attribute_type);
+
+            // Usa take_value_if per PRINTABLE_STRING o UTF8_STRING
+            let attribute_value = cons.take_value(|tag, content| {
+                match tag {
+                    Tag::PRINTABLE_STRING | Tag::UTF8_STRING => {
+                        let bytes = content.as_primitive()?.slice_all()?;
+                        let value = String::from_utf8(bytes.to_vec())
+                            .map_err(|_| DecodeError::content("Invalid UTF-8 sequence", decode::Pos::default()))?;
+                        println!("[AV] Successfully parsed attribute value: {}\n", value);
+                        Ok(value)
+                    },
+                    _ => Err(DecodeError::content("Unsupported attribute value type", decode::Pos::default())),
+                }
+            })?;
+
+            // LOGGING added here, before returning the result
+            println!("[AV] Parsed attribute value (string): {:?}\n", attribute_value);
+
+            Ok(AttributeTypeAndValue {
+                attribute_type,
+                attribute_value,
+            })
+        })
+    }
+}
+
+
+impl AuthenticatedAttributes {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+          
+          let auth_attr_bytes = cons.capture_all()?.into_bytes().to_vec();
+          Ok(AuthenticatedAttributes {auth_attr: auth_attr_bytes, })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "AuthenticatedAttributes {{\n  authenticated attributes: {:?}\n}}",
+            self.auth_attr
+        )
+    }
+}
+/* 
+impl Attribute {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        cons.take_sequence(|cons| {
+            let oid = Oid::take_from(cons)?;
+            let value = cons.take_value_if(Tag::OCTET_STRING, |content| {
+                let bytes = content.as_primitive()?.slice_all()?; 
+                    Ok(bytes.to_vec()) 
+                })?;
+            Ok(Attribute { oid, value })
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "Attribute {{\n  oid: {},\n  value: {:?}\n}}",
+            self.oid.to_string(),
+            self.value
+        )
+    }
+}*/
+
+impl ContentInfo {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        cons.take_sequence(|cons| {
+
+            let content_type = Oid::take_from(cons)?;
+            let content = cons.take_opt_constructed_if(Tag::CTX_0, |content| {
+                let bytes = content.take_primitive(|_, content| {
+                    Ok(content.slice_all()?.to_vec())
+                })?;
+                Ok(bytes)
+            })?;
+
+            Ok(ContentInfo {
+                content_type,
+                content,
+            })
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "ContentInfo {{\n  content_type: {},\n  content: {:?}\n}}",
+            self.content_type.to_string(),
+            self.content
+        )
+    }
+}
 
 impl Certificate {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
@@ -209,54 +462,6 @@ impl Certificate {
             self.signature_value,
         )
     }
-
-    /*pub fn verify(&self, trusted_root_cert: &[Certificate]) -> Result<(), Box<dyn std::error::Error>> {
-
-        self.verify_signature()?;
-
-        self.verify_validity()?;
-
-        //self.verify_trust(trusted_root_cert)?;
-
-        Ok(())
-    }
-
-
-    fn verify_signature(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let tbs_cert_bytes = self.tbs_certificate.encode_to_der()?;
-        println!("tbs_bytes {:?}",tbs_cert_bytes);
-        let sig_bytes = hex::decode(&self.signature_value)?;
-
-        let alg_oid = self.signature_algorithm.algorithm;
-        let alg = match alg_oid.to_string().as_str() {
-            "1.2.840.113549.1.1.11" => &signature::RSA_PKCS1_2048_8192_SHA256,
-            _ => return Err(Box::new(VerifyError::UnsupportedAlgorithm)),
-        };
-
-        let public_key_bytes = hex::decode(&self.tbs_certificate.subject_public_key_info.subject_public_key)?;
-        let public_key = UnparsedPublicKey::new(alg, &public_key_bytes);
-
-        public_key.verify(&tbs_cert_bytes, &sig_bytes).map_err(|_| Box::new(VerifyError::InvalidSignature))?;
-
-
-        Ok(())
-    }
-
-    fn verify_validity(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let now = Utc::now();
-        let n_now = now.format(("%y%m%d%H%M%SZ"));
-
-        let format = "%y%m%d%H%M%SZ";
-        let not_before_date = NaiveDateTime::parse_from_str(&self.tbs_certificate.validity.not_before, format).expect("Failed formatting date");
-        let not_after_date = NaiveDateTime::parse_from_str(&self.tbs_certificate.validity.not_after, format).expect("Failed formatting date");
-        let now_date = NaiveDateTime::parse_from_str(&n_now.to_string(), format).expect("Failed formatting date");
-
-        if now_date < not_before_date || now_date > not_after_date {
-            return Err(Box::new(VerifyError::CertificateExpired));
-        }
-
-        Ok(())
-    }*/
 
 }
 
@@ -416,9 +621,6 @@ impl Validity {
     }
 }
 
-
-
-
 impl SubjectPublicKeyInfo {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
         cons.take_sequence(|cons| {
@@ -507,13 +709,18 @@ fn load_pkcs7(path: &str) -> Result<Pkcs7, Box<dyn std::error::Error>> {
 }
 
 
+/*
+    problema
+
+*/
 fn main() {
-    match load_pkcs7("../rchain.p7b") {
+    match load_pkcs7("../sdoc.p7b") {
         Ok(pkcs7) => {
             println!("PKCS#7 file loaded successfully!");
-            println!("{:?}",pkcs7.content[0].tbs_certificate.validity.not_after);
-            let a = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-            println!("now {}", a)
+            println!("{:?}",pkcs7.content.certs[0].signature_value);
+            println!("not after{:?}",pkcs7.content.certs[0].tbs_certificate.validity.not_after);
+            //let a = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            //println!("now {}", a)
 
         },
         Err(e) => println!("Failed to load PKCS#7 file: {}", e),
