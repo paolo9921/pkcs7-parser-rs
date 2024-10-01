@@ -7,7 +7,7 @@ Verification of trust (certificate path)
 */
 
 
-use bcder::{decode::Source, OctetString};
+use bcder::{decode::{IntoSource, Source}, OctetString};
 #[allow(dead_code)]
 use bcder::{Oid, Tag, Mode};
 use bcder::decode::{self, Constructed, DecodeError};
@@ -39,10 +39,10 @@ pub struct SignerInfo {
     pub signer_identifier: SignerIdentifier,
     //pub issuer_and_serial_number: IssuerAndSerialNumber,
     pub digest_algorithm: AlgorithmIdentifier,
-    pub auth_attributes: Option<AuthenticatedAttributes>, // Optional field
+    pub auth_attributes: Option<Vec<Attribute>>, // Optional field
     pub signature_algorithm: AlgorithmIdentifier,
     pub signature: Vec<u8>, // The actual signature (Encrypted digest)
-    pub unauthenticated_attributes: Option<AuthenticatedAttributes>, // Optional field
+    //pub unauthenticated_attributes: Option<AuthenticatedAttributes>, // Optional field
 }
 #[derive(Debug)]
 
@@ -73,12 +73,17 @@ pub struct AttributeTypeAndValue {
 }
 #[derive(Debug)]
 pub struct AuthenticatedAttributes {
-    pub auth_attr: Vec<u8>, 
+    //pub auth_attr_bytes: Vec<u8>, 
+    pub attributes: Vec<Attribute>,
+}
+#[derive(Debug)]
+pub struct Attribute {
+    pub oid: Oid,           
+    pub value: Vec<u8>, 
 }
 
-pub struct Attribute {
-    pub oid: Oid,           // Object Identifier of the attribute
-    pub value: Vec<u8>,     // Byte array representing the attribute value
+pub struct AttributeValue{
+    pub bytes_value: Vec<u8>,
 }
 
 pub struct ContentInfo {
@@ -194,17 +199,22 @@ impl SignedData {
 impl SignerInfo {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
 
-        println!("PARSING SIGNER INFO");
         cons.take_sequence(|cons| {
+           
             let version = cons.take_primitive_if(Tag::INTEGER, |content| content.to_u8())?;
-
             let signer_identifier = SignerIdentifier::take_from(cons)?;
             /*let issuer_and_serial_number = IssuerAndSerialNumber::take_from(cons)?;
             println!("signerInfo issSerial: {:?}",issuer_and_serial_number);*/
             
             let digest_algorithm = AlgorithmIdentifier::take_from(cons)?;
+            
+            
             let auth_attributes = cons.take_opt_constructed_if(Tag::CTX_0, |cons| {
-                AuthenticatedAttributes::take_from(cons)
+                let mut attributes = Vec::new();
+                while let Ok(attr) = Attribute::take_from(cons){
+                    attributes.push(attr);
+                }
+                Ok(attributes)
             })?;
 
             let signature_algorithm = AlgorithmIdentifier::take_from(cons)?;
@@ -218,9 +228,9 @@ impl SignerInfo {
                 Ok(sign_bytes)
             })?;
 
-            let unauthenticated_attributes = cons.take_opt_constructed_if(Tag::CTX_1, |cons| {
+            /*let unauthenticated_attributes = cons.take_opt_constructed_if(Tag::CTX_1, |cons| {
                 AuthenticatedAttributes::take_from(cons)
-            })?;
+            })?;*/
 
             cons.skip_all().unwrap_or(());
             //let unauthenticated_attributes = None;
@@ -231,7 +241,7 @@ impl SignerInfo {
                 auth_attributes,
                 signature_algorithm,
                 signature,
-                unauthenticated_attributes,
+                //unauthenticated_attributes,
             })
         })
     }
@@ -245,8 +255,6 @@ impl SignerInfo {
         )
     }
 }
-
-
 
 impl SignerIdentifier {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
@@ -400,33 +408,75 @@ impl AttributeTypeAndValue {
     }
 }
 
-
+/* AUTH ATTR BONO
 impl AuthenticatedAttributes {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
         
         println!("PARSING auth attr");
 
-        let auth_attr_bytes = cons.capture_all()?.into_bytes().to_vec();
-        println!("signed_attributes bytes: {:?}",auth_attr_bytes);
-        Ok(AuthenticatedAttributes {auth_attr: auth_attr_bytes, })
+        let auth_bytes = cons.capture_all()?.into_bytes();
+        let auth_attr_bytes = auth_bytes.clone().to_vec();
+        //println!("signed_attributes bytes: {:?}",auth_attr_bytes);
+
+        let auth_source = auth_attr_bytes.into_source();
+
+        //println!("auth source {:?}",auth_source.slice());
+       /* let attributes = Constructed::decode(auth_source, Mode::Der, |cons|{
+
+            println!("cons prima {:?}",cons);
+
+            let auth_attributes_vec = cons.take_constructed(|_,cons|{
+
+                let mut auth_attrs = Vec::new();
+                println!("cons passato a Attribute {:?}",cons);
+                
+                while let Ok(attr) = Attribute::take_from(cons){
+                    auth_attrs.push(attr);
+                }
+                Ok(auth_attrs)
+            })?;
+
+            Ok(auth_attributes_vec)
+        }).expect("failed to parse auth attr values"); */
+
+
+        Ok(AuthenticatedAttributes {
+            auth_attr_bytes,
+            attributes
+         })
     }
 
     pub fn to_string(&self) -> String {
         format!(
             "AuthenticatedAttributes {{\n  authenticated attributes: {:?}\n}}",
-            self.auth_attr
+            self.auth_attr_bytes
         )
     }
-}
-/* 
+}*/
+
+
 impl Attribute {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+
+        //println!("cons: {:?}",cons.capture_all()?.as_slice());
         cons.take_sequence(|cons| {
+            
             let oid = Oid::take_from(cons)?;
-            let value = cons.take_value_if(Tag::OCTET_STRING, |content| {
-                let bytes = content.as_primitive()?.slice_all()?; 
-                    Ok(bytes.to_vec()) 
-                })?;
+            //println!("parsed attr with OID {:?}",oid.as_ref().to_vec());
+            
+            //value = vec di bytes (AttributeValue senza i 2 byte di Tag)
+            let value = cons.take_set(|cons|{
+                let mut bytes_value = cons.capture_all()?.as_slice().to_vec();
+                bytes_value.drain(0..2);
+                //println!("bytes_value: {:?}\n",bytes_value);
+                Ok(bytes_value)
+                /*let mut attr_values = Vec::new();
+                if let Ok(attr_value) = AttributeValue::take_from(cons){
+                    attr_values.push(attr_value);
+                }
+                Ok(attr_values)*/ 
+            })?;
+
             Ok(Attribute { oid, value })
         })
     }
@@ -438,7 +488,79 @@ impl Attribute {
             self.value
         )
     }
+}
+
+
+/* useless data for now, bytes are sufficient (only need the digest value)
+impl AttributeValue {
+    pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        
+        cons.take
+        
+        
+        
+        
+    }
 }*/
+
+
+/*CHATFPT
+impl AuthenticatedAttributes {
+    pub fn take_from<S: decode::Source>(
+        cons: &mut Constructed<S>,
+    ) -> Result<Self, DecodeError<S::Error>> {
+        println!("PARSING auth attr");
+
+        // Gli authenticated attributes sono un SET di Attribute
+        let attributes = cons.take_set(|cons| {
+            let mut attrs = Vec::new();
+            while let Ok(attr) = Attribute::take_from(cons) {
+                attrs.push(attr);
+            }
+            Ok(attrs)
+        })?;
+
+        Ok(AuthenticatedAttributes { attributes })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "AuthenticatedAttributes {{\n  attributes: {:?}\n}}",
+            self.attributes
+        )
+    }
+}
+
+
+impl Attribute {
+    pub fn take_from<S: decode::Source>(
+        cons: &mut Constructed<S>,
+    ) -> Result<Self, DecodeError<S::Error>> {
+        println!("PARSING ATTRIBUTE");
+
+        cons.take_sequence(|cons| {
+            let oid = Oid::take_from(cons)?;
+            println!("parsed attr with OID {:?}", oid);
+
+            // attrValues è un SET di AttributeValue
+            let values = cons.take_set(|cons| {
+                let mut vals = Vec::new();
+                while let Ok(value) = cons.take_value(|_,content|{
+                    let attr_value = content.as_primitive()?.slice_all();
+                    Ok(attr_value)
+                }) {
+                    vals.push(value);
+                }
+                Ok(vals)
+            })?;
+
+            Ok(Attribute { oid, values })
+        })
+    }
+}
+
+*/
+
 
 impl ContentInfo {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
