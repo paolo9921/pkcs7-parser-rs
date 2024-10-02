@@ -23,6 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct Pkcs7 {
     pub content_type: Oid,
     pub content: SignedData,
+    pub content_bytes: Vec<u8>,
 }
 
 pub struct SignedData {
@@ -40,6 +41,7 @@ pub struct SignerInfo {
     //pub issuer_and_serial_number: IssuerAndSerialNumber,
     pub digest_algorithm: AlgorithmIdentifier,
     pub auth_attributes: Option<Vec<Attribute>>, // Optional field
+    pub auth_bytes: Vec<u8>,
     pub signature_algorithm: AlgorithmIdentifier,
     pub signature: Vec<u8>, // The actual signature (Encrypted digest)
     //pub unauthenticated_attributes: Option<AuthenticatedAttributes>, // Optional field
@@ -125,16 +127,50 @@ pub struct SubjectPublicKeyInfo {
 
 impl Pkcs7 {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+        
         cons.take_sequence(|cons| {
+
             let content_type = Oid::take_from(cons)?;
-            let content = cons.take_constructed_if(Tag::CTX_0, |cons| {
+
+            let content_captured = cons.capture_all()?;
+            let mut content_bytes = content_captured.as_slice().to_vec();
+            content_bytes.drain(0..4); //remove tag and lenght bytes
+
+            let content_source = content_captured.into_source(); 
+
+            let content = Constructed::decode(content_source, Mode::Ber, |cons|{
+                let content_parsed = cons.take_constructed_if(Tag::CTX_0, |cons| {
+                    SignedData::take_from(cons)
+                })?;
+                Ok(content_parsed)
+            }).expect("failed to parse content");
+
+            
+            Ok(Pkcs7 {
+                content_type,
+                content,
+                content_bytes,
+            })
+
+        })
+
+            /*let auth_bytes = cons.capture_all()?.into_bytes();
+        let auth_attr_bytes = auth_bytes.clone().to_vec();
+        //println!("signed_attributes bytes: {:?}",auth_attr_bytes);
+
+        let auth_source = auth_attr_bytes.into_source();
+
+        //println!("auth source {:?}",auth_source.slice());
+        let attributes = Constructed::decode(auth_source, Mode::Der, |cons|{ */
+
+           /* let content = cons.take_constructed_if(Tag::CTX_0, |cons| {
                 SignedData::take_from(cons)
             })?;
             Ok(Pkcs7 {
                 content_type,
                 content,
             })
-        })
+        })*/
     }
 
     pub fn to_string(&self) -> String {
@@ -208,14 +244,23 @@ impl SignerInfo {
             
             let digest_algorithm = AlgorithmIdentifier::take_from(cons)?;
             
+            // *TODO* vec di bytes di auth attr
+            let auth_captured = cons.capture_all()?;
+            let mut auth_bytes = auth_captured.as_slice().to_vec();
+            auth_bytes.drain(0..2); //remove implicit tag and lenght (A0,len)
+            let auth_source = auth_captured.into_source();
+            println!("auth_bytes {:?}",auth_bytes);
+            let auth_attributes = Constructed::decode(auth_source, Mode::Ber, |cons|{
+                let auth_attrs = cons.take_opt_constructed_if(Tag::CTX_0, |cons| {
+                    let mut attributes = Vec::new();
+                    while let Ok(attr) = Attribute::take_from(cons){
+                        attributes.push(attr);
+                    }
+                    Ok(attributes)
+                })?;
+                Ok(auth_attrs)
+            }).expect("failed to parse auth attributes");
             
-            let auth_attributes = cons.take_opt_constructed_if(Tag::CTX_0, |cons| {
-                let mut attributes = Vec::new();
-                while let Ok(attr) = Attribute::take_from(cons){
-                    attributes.push(attr);
-                }
-                Ok(attributes)
-            })?;
 
             let signature_algorithm = AlgorithmIdentifier::take_from(cons)?;
 
@@ -239,6 +284,7 @@ impl SignerInfo {
                 signer_identifier,
                 digest_algorithm,
                 auth_attributes,
+                auth_bytes,
                 signature_algorithm,
                 signature,
                 //unauthenticated_attributes,
@@ -458,6 +504,7 @@ impl AuthenticatedAttributes {
 impl Attribute {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
 
+        println!("parsing attribute");
         //println!("cons: {:?}",cons.capture_all()?.as_slice());
         cons.take_sequence(|cons| {
             
@@ -890,6 +937,7 @@ fn main() {
     match load_pkcs7("../sdoc.p7b") {
         Ok(pkcs7) => {
             println!("PKCS#7 file loaded successfully!");
+            //println!("signed attributes: {:?}",pkcs7.content.signer_infos[0].auth_attributes);
             //println!("tbs_bytes: {:?}",pkcs7.content.certs[0].tbs_certificate.tbs_bytes);
             //println!("auth attr{:?}",pkcs7.content.signer_infos[0].authenticated_attributes);
             //let a = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
