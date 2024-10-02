@@ -109,6 +109,7 @@ pub struct TbsCertificate {
     pub subject_public_key_info: SubjectPublicKeyInfo,
     //pub tbs_bytes: Vec<u8>,
 }
+#[derive(Debug)]
 
 pub struct AlgorithmIdentifier {
     pub algorithm: Oid,
@@ -153,24 +154,6 @@ impl Pkcs7 {
             })
 
         })
-
-            /*let auth_bytes = cons.capture_all()?.into_bytes();
-        let auth_attr_bytes = auth_bytes.clone().to_vec();
-        //println!("signed_attributes bytes: {:?}",auth_attr_bytes);
-
-        let auth_source = auth_attr_bytes.into_source();
-
-        //println!("auth source {:?}",auth_source.slice());
-        let attributes = Constructed::decode(auth_source, Mode::Der, |cons|{ */
-
-           /* let content = cons.take_constructed_if(Tag::CTX_0, |cons| {
-                SignedData::take_from(cons)
-            })?;
-            Ok(Pkcs7 {
-                content_type,
-                content,
-            })
-        })*/
     }
 
     pub fn to_string(&self) -> String {
@@ -184,6 +167,7 @@ impl Pkcs7 {
 
 impl SignedData {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
+
         cons.take_sequence(|cons| {
             let version = cons.take_primitive_if(Tag::INTEGER, |content| content.to_u8())?;
             let digest_algorithms = cons.take_set(|cons| {
@@ -204,6 +188,8 @@ impl SignedData {
             })?;
 
             let signer_infos = cons.take_set(|cons| {
+                println!("*** Signer");
+
                 let mut signers = Vec::new();
                 while let Ok(signer) = SignerInfo::take_from(cons) {
                     signers.push(signer);
@@ -244,12 +230,11 @@ impl SignerInfo {
             
             let digest_algorithm = AlgorithmIdentifier::take_from(cons)?;
             
-            // *TODO* vec di bytes di auth attr
-            let auth_captured = cons.capture_all()?;
+            let auth_captured = cons.capture_one()?;
             let mut auth_bytes = auth_captured.as_slice().to_vec();
             auth_bytes.drain(0..2); //remove implicit tag and lenght (A0,len)
             let auth_source = auth_captured.into_source();
-            println!("auth_bytes {:?}",auth_bytes);
+
             let auth_attributes = Constructed::decode(auth_source, Mode::Ber, |cons|{
                 let auth_attrs = cons.take_opt_constructed_if(Tag::CTX_0, |cons| {
                     let mut attributes = Vec::new();
@@ -261,6 +246,7 @@ impl SignerInfo {
                 Ok(auth_attrs)
             }).expect("failed to parse auth attributes");
             
+            //println!("auth attr: {:?}",auth_attributes);
 
             let signature_algorithm = AlgorithmIdentifier::take_from(cons)?;
 
@@ -392,7 +378,7 @@ impl Name {
         //println!("skipped in Name: {:?}",skipped);
         Ok( Name { rdn_sequence: Vec::new() } )
     }
-}*/
+}
 
 impl RelativeDistinguishedName {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
@@ -453,7 +439,7 @@ impl AttributeTypeAndValue {
         })
     }
 }
-
+*/
 /* AUTH ATTR BONO
 impl AuthenticatedAttributes {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
@@ -503,8 +489,6 @@ impl AuthenticatedAttributes {
 
 impl Attribute {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
-
-        println!("parsing attribute");
         //println!("cons: {:?}",cons.capture_all()?.as_slice());
         cons.take_sequence(|cons| {
             
@@ -541,12 +525,7 @@ impl Attribute {
 /* useless data for now, bytes are sufficient (only need the digest value)
 impl AttributeValue {
     pub fn take_from<S: decode::Source>(cons: &mut Constructed<S>) -> Result<Self, DecodeError<S::Error>> {
-        
-        cons.take
-        
-        
-        
-        
+          
     }
 }*/
 
@@ -772,7 +751,7 @@ impl AlgorithmIdentifier {
             let algorithm = Oid::take_from(cons)?;
             let parameters = None; //not needed
             _= cons.skip_all();
-             
+
             Ok(AlgorithmIdentifier {
                 algorithm,
                 parameters,
@@ -937,7 +916,7 @@ fn main() {
     match load_pkcs7("../sdoc.p7b") {
         Ok(pkcs7) => {
             println!("PKCS#7 file loaded successfully!");
-            //println!("signed attributes: {:?}",pkcs7.content.signer_infos[0].auth_attributes);
+            println!("signed attributes: {:?}",pkcs7.content.signer_infos[0].auth_attributes);
             //println!("tbs_bytes: {:?}",pkcs7.content.certs[0].tbs_certificate.tbs_bytes);
             //println!("auth attr{:?}",pkcs7.content.signer_infos[0].authenticated_attributes);
             //let a = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
